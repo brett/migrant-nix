@@ -8,7 +8,7 @@
   stdenvNoCC,
   makeWrapper,
   src,
-  doctor,
+  doctor, # nix/doctor.sh
 
   # External commands the CLI shells out to. Guarded by checks.cli-closure —
   # keep it in sync with the script, not with this list's aesthetics.
@@ -98,8 +98,10 @@ stdenvNoCC.mkDerivation {
     install -Dm644 setup/network.xml $out/share/migrant/network.xml
     install -Dm644 setup/_migrant    $out/share/zsh/site-functions/_migrant
 
-    mkdir -p $out/bin
-    ln -s ${doctor}/bin/migrant-doctor $out/bin/migrant-doctor
+    # The doctor verifies the closure and the libvirt network that migrant
+    # itself sees, so it must run with migrant's PATH and URI, not its own.
+    install -Dm755 ${doctor} $out/bin/migrant-doctor
+    patchShebangs $out/bin/migrant-doctor
 
     # MIGRANT_SETUP_DIR is deliberately NOT set: `migrant setup` must never
     # attempt imperative host setup here. Upstream's resolve_setup_dir runs
@@ -113,6 +115,10 @@ stdenvNoCC.mkDerivation {
       --prefix PATH : ${lib.makeBinPath runtimeDeps} \
       --set MIGRANT_SETUP_COMMAND $out/bin/migrant-doctor \
       --set MIGRANT_HOOKS_DIR /var/lib/libvirt/hooks
+
+    wrapProgram $out/bin/migrant-doctor \
+      --prefix PATH : ${lib.makeBinPath runtimeDeps} \
+      --set LIBVIRT_DEFAULT_URI qemu:///system
 
     runHook postInstall
   '';

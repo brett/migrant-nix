@@ -1,3 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
 # migrant host doctor for NixOS.
 #
 # The NixOS module owns privileged setup, so this must never call sudo — it only

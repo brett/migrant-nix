@@ -21,10 +21,9 @@
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
 
-      doctor = pkgs.callPackage ./nix/doctor.nix { };
       migrantPkg = pkgs.callPackage ./nix/package.nix {
         src = migrant;
-        inherit doctor;
+        doctor = ./nix/doctor.sh;
       };
 
       # A NixOS system with the module enabled, booted directly in QEMU with
@@ -47,7 +46,6 @@
       packages.${system} = {
         migrant = migrantPkg;
         default = migrantPkg;
-        inherit doctor;
 
         # `nix run '.#test-vm'` — a disposable NixOS host to poke at by hand.
         test-vm = testVm [ ];
@@ -95,6 +93,7 @@
         inherit pkgs;
         module = self.nixosModules.default;
         package = migrantPkg;
+        doctorScript = ./nix/doctor.sh;
       };
     };
 }

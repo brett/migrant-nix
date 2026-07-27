@@ -12,6 +12,7 @@
   pkgs,
   module,
   package,
+  doctorScript,
 }:
 let
   # Verification tooling for the hook-driven teardown tests. iptables here is
@@ -312,6 +313,13 @@ let
   '';
 in
 {
+  doctor-shellcheck =
+    pkgs.runCommand "migrant-doctor-shellcheck" { nativeBuildInputs = [ pkgs.shellcheck ]; }
+      ''
+        shellcheck ${doctorScript}
+        touch $out
+      '';
+
   cli-closure = pkgs.runCommand "migrant-cli-closure" { } ''
     # Guards runtimeDeps: every external command the CLI shells out to must
     # resolve on the wrapped PATH. Keep the list current with the script.
