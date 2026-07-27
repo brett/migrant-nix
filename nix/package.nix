@@ -108,13 +108,13 @@ stdenvNoCC.mkDerivation {
     # before check_kvm and sudo -v, so on an upstream without the handoff below
     # it exits EX_UNAVAILABLE having changed nothing and prompted for nothing.
     #
-    # MIGRANT_SETUP_COMMAND and MIGRANT_HOOKS_DIR are proposed upstream
+    # MIGRANT_SETUP_COMMAND and LIBVIRT_CONF_DIR are proposed upstream
     # (see README, "Upstream changes"). Both are inert on an upstream that does
     # not read them, and start working the day it does.
     wrapProgram $out/bin/migrant \
       --prefix PATH : ${lib.makeBinPath runtimeDeps} \
       --set MIGRANT_SETUP_COMMAND $out/bin/migrant-doctor \
-      --set MIGRANT_HOOKS_DIR /var/lib/libvirt/hooks
+      --set LIBVIRT_CONF_DIR /var/lib/libvirt
 
     wrapProgram $out/bin/migrant-doctor \
       --prefix PATH : ${lib.makeBinPath runtimeDeps} \

@@ -79,7 +79,7 @@ in
         making dispatch impossible, so there is no risk of the loop hook running
         twice even if libvirt were to scan /etc/libvirt/hooks.
 
-        Set to false once the pinned migrant honours MIGRANT_HOOKS_DIR, which
+        Set to false once the pinned migrant honours LIBVIRT_CONF_DIR, which
         the package already sets.
       '';
     };

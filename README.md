@@ -101,15 +101,12 @@ yet. Both are inert without them and start working the day they merge:
 
 - **`MIGRANT_SETUP_COMMAND`** — makes `migrant setup` hand off to
   `migrant-doctor`, so there is one command name across every distro.
-- **`MIGRANT_HOOKS_DIR`** — tells migrant where libvirt actually dispatches
-  hooks. NixOS uses `/var/lib/libvirt/hooks`; upstream hardcodes
-  `/etc/libvirt/hooks` in `ensure_shared_folder_images()`, which would report a
-  spurious "run `migrant setup` first" for any VM with shared-folder isolation.
-  Until it lands, the module installs a **non-executable** placeholder at
-  `/etc/libvirt/hooks/qemu.d/migrant-loop` to satisfy that file test. Non-
-  executability is the point: it cannot be dispatched, so the loop hook can
-  never run twice. Set `installHookDirCompatShim = false` once the pinned
-  migrant honours `MIGRANT_HOOKS_DIR`.
+- **`LIBVIRT_CONF_DIR`** — `/var/lib/libvirt`: nixpkgs builds libvirt with
+  `--sysconfdir=/var/lib`, so `hooks/` and `network.conf` both live there.
+  Until it lands, the module ships a non-executable placeholder at
+  `/etc/libvirt/hooks/qemu.d/migrant-loop` so `ensure_shared_folder_images()`
+  stops reporting "run `migrant setup` first". Set
+  `installHookDirCompatShim = false` once merged.
 
 ## Development
 
