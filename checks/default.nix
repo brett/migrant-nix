@@ -421,6 +421,32 @@ in
       # is 0 even under a non-KVM builder, and no sudo exists to be called.
       print(host.succeed("su - tester -c 'migrant-doctor'"))
       host.fail("command -v sudo")
+      # The doctor must report what is actually configured, not merely exit 0.
+      # A silently-failing extraction (the original used a variable-width PCRE
+      # lookbehind, which makes grep -oP exit 2 on every host) returns the
+      # default string for every input, and no exit-code assertion catches it.
+      # nixpkgs builds libvirt with --sysconfdir=/var/lib, so this is the path
+      # that matters here, not /etc/libvirt.
+      conf = "/var/lib/libvirt/network.conf"
+      host.succeed(f"test -d $(dirname {conf})")
+      for content, expected in [
+          ('firewall_backend = "nftables"', "nftables"),
+          # whitespace variants libvirt or an admin may write
+          ('  firewall_backend="iptables"', "iptables"),
+          ('firewall_backend\t=\t"nftables"', "nftables"),
+          # a commented-out setting is not a setting
+          ('# firewall_backend = "iptables"', "default"),
+      ]:
+          host.succeed(f"printf '%s\\n' '{content}' > {conf}")
+          # Redirect rather than pipe: grep -q exits at the first match, and the
+          # doctor then dies on EPIPE writing its remaining rows, which pipefail
+          # reports as a failure even though the match succeeded.
+          host.succeed("su - tester -c migrant-doctor > /tmp/doctor.out")
+          host.succeed(f"grep -Eq '^firewall backend: +{expected}' /tmp/doctor.out")
+      # absent file must also read as the default, not as an error
+      host.succeed(f"rm -f {conf}")
+      host.succeed("su - tester -c migrant-doctor > /tmp/doctor.out")
+      host.succeed("grep -Eq '^firewall backend: +default' /tmp/doctor.out")
       # `migrant setup` must never perform imperative setup on this host. With
       # the upstream MIGRANT_SETUP_COMMAND handoff it runs the doctor (0);
       # without it, resolve_setup_dir exits 69 before any side effect. Anything
