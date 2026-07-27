@@ -78,15 +78,18 @@ else
 fi
 
 # hooks — must be executable; an empty or non-executable file at the path is not
-# enough, and libvirt would silently skip it.
-for hook in qemu.d/migrant qemu.d/migrant-loop network.d/migrant; do
-  if [[ -x "$hooks_dir/$hook" ]]; then
-    row "hook ${hook}:" "installed"
+# enough, and libvirt would silently skip it. Labels match cmd_setup's.
+check_hook() {
+  if [[ -x "$hooks_dir/$2" ]]; then
+    row "$1" "installed"
   else
-    row "hook ${hook}:" "MISSING/not executable [ERROR]"
+    row "$1" "MISSING/not executable [ERROR]"
     bad
   fi
-done
+}
+check_hook "qemu hook:" qemu.d/migrant
+check_hook "loop hook:" qemu.d/migrant-loop
+check_hook "rp_filter hook:" network.d/migrant
 
 # command closure — the wrapped migrant must resolve everything lifecycle needs.
 for cmd in virsh virt-install qemu-img mkfs.ext4 xorriso wg; do
