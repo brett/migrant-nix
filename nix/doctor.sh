@@ -145,7 +145,11 @@ fi
 # normally /etc/libvirt lives at /var/lib/libvirt here: network.conf, qemu.conf,
 # nwfilter, hooks. Reading /etc/libvirt/network.conf finds nothing and silently
 # reports the default, which is wrong whenever a backend is actually pinned.
-backend=$(grep -oP '(?<=^\s*firewall_backend\s=\s")[^"]+' /var/lib/libvirt/network.conf 2>/dev/null | head -1 || true)
+# sed, not grep -oP: a PCRE lookbehind must be fixed-width, so a leading \s*
+# makes it invalid ("length of lookbehind assertion is not limited", exit 2) and
+# 2>/dev/null turns that into a silent empty result on every host.
+backend=$(sed -n 's/^[[:space:]]*firewall_backend[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+  /var/lib/libvirt/network.conf 2>/dev/null | head -1 || true)
 row "firewall backend:" "${backend:-default (libvirt-selected)}"
 
 echo ""
