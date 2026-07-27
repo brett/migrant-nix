@@ -1,0 +1,44 @@
+{
+  "nodes": {
+    "migrant": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1785090544,
+        "narHash": "sha256-IpaVo9rm7xGlK5mB4SI2hWP2UWzdQeGcC4I9+pczRXU=",
+        "owner": "pigmonkey",
+        "repo": "migrant",
+        "rev": "ea0ea4f0a4dae90ad58536561c7879f34e9b4a83",
+        "type": "github"
+      },
+      "original": {
+        "owner": "pigmonkey",
+        "repo": "migrant",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1785002762,
+        "narHash": "sha256-Y0BbgB3BLLHEUK88g4oSp3DerIx7rCX0iwICKJcY7/c=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "f7a2e428f5d71c47a5a938a3c5ad7138bb291093",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-26.05",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "migrant": "migrant",
+        "nixpkgs": "nixpkgs"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
