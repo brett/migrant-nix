@@ -83,7 +83,7 @@
   users.motd = ''
 
     migrant NixOS test VM (auto-logged in as nixos). Try:
-      migrant-doctor    # verify the module wired the host
+      migrant setup     # verify the module wired the host
       agent-up          # launch an isolated agent VM (migrant up)
     then: migrant status | migrant ssh | migrant console | migrant destroy
   '';

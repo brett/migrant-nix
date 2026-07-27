@@ -22,7 +22,7 @@ let
     set -uo pipefail
     fail() { echo "SELFCHECK-FAIL: $*" >&2; exit 1; }
 
-    migrant-doctor 2>&1 | tee /tmp/doctor.log
+    migrant setup 2>&1 | tee /tmp/doctor.log
     grep -q "prerequisites satisfied" /tmp/doctor.log || fail "doctor did not pass"
 
     cd "$HOME/agent-vm" || fail "no agent-vm dir"

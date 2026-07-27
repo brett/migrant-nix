@@ -63,26 +63,6 @@ in
       '';
     };
 
-    installHookDirCompatShim = lib.mkOption {
-      type = lib.types.bool;
-      default = true;
-      description = ''
-        Install a non-executable placeholder at
-        /etc/libvirt/hooks/qemu.d/migrant-loop.
-
-        migrant's ensure_shared_folder_images() tests that path before starting
-        a VM with shared-folder isolation, but NixOS dispatches hooks from
-        /var/lib/libvirt/hooks, so without the placeholder that check reports a
-        spurious "run 'migrant setup' first".
-
-        Non-executability is load-bearing: it satisfies the file test while
-        making dispatch impossible, so there is no risk of the loop hook running
-        twice even if libvirt were to scan /etc/libvirt/hooks.
-
-        Set to false once the pinned migrant honours LIBVIRT_CONF_DIR, which
-        the package already sets.
-      '';
-    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -133,18 +113,6 @@ in
     virtualisation.libvirtd.hooks.qemu."migrant" = wrapHook "qemu.d/migrant";
     virtualisation.libvirtd.hooks.qemu."migrant-loop" = wrapHook "qemu.d/migrant-loop";
     virtualisation.libvirtd.hooks.network."migrant" = wrapHook "network.d/migrant";
-
-    # See the option description. Non-executable by design.
-    environment.etc."libvirt/hooks/qemu.d/migrant-loop" = lib.mkIf cfg.installHookDirCompatShim {
-      text = ''
-        # Placeholder, not a hook. The real migrant loop hook is registered at
-        # /var/lib/libvirt/hooks/qemu.d/migrant-loop, which is where NixOS's
-        # libvirt dispatches from. This file exists only so migrant's
-        # ensure_shared_folder_images() file test succeeds; it is deliberately
-        # not executable. See virtualisation.migrant.installHookDirCompatShim.
-      '';
-      mode = "0444";
-    };
 
     # Define and autostart the migrant network idempotently from the packaged
     # XML. NixOS has no first-class "define a libvirt network" option, so a root

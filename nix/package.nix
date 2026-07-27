@@ -66,15 +66,31 @@ let
     "_migrant"
   ];
   missingAssets = lib.filter (f: !builtins.pathExists "${src}/setup/${f}") setupAssets;
+
+  # The wrapper below is inert unless migrant reads these. Without the check, an
+  # older pin silently loses the handoff (cmd_setup would try imperative setup)
+  # and the relocated libvirt tree (breaking shared-folder VMs) — both at
+  # runtime, on the user's host, rather than here.
+  script = builtins.readFile "${src}/migrant";
+  requiredVars = [
+    "MIGRANT_SETUP_COMMAND"
+    "LIBVIRT_CONF_DIR"
+  ];
+  missingVars = lib.filter (v: !lib.hasInfix v script) requiredVars;
 in
 assert lib.assertMsg (missingAssets == [ ]) ''
   migrant-nix: the pinned migrant input is missing setup/ assets: ${lib.concatStringsSep ", " missingAssets}
   Upstream may have renamed or moved them. Reconcile nix/package.nix with the
   new layout before bumping the input.
 '';
+assert lib.assertMsg (missingVars == [ ]) ''
+  migrant-nix: the pinned migrant input does not read: ${lib.concatStringsSep ", " missingVars}
+  These landed upstream in pigmonkey/migrant#14. Pin a migrant at or after that
+  merge, or this package's wrapper silently does nothing.
+'';
 stdenvNoCC.mkDerivation {
   pname = "migrant";
-  version = "0-unstable-2026-07-26";
+  version = "0-unstable-2026-07-27";
   inherit src;
 
   nativeBuildInputs = [ makeWrapper ];
@@ -104,13 +120,11 @@ stdenvNoCC.mkDerivation {
     patchShebangs $out/bin/migrant-doctor
 
     # MIGRANT_SETUP_DIR is deliberately NOT set: `migrant setup` must never
-    # attempt imperative host setup here. Upstream's resolve_setup_dir runs
-    # before check_kvm and sudo -v, so on an upstream without the handoff below
-    # it exits EX_UNAVAILABLE having changed nothing and prompted for nothing.
+    # attempt imperative host setup here — it hands off to the doctor instead.
     #
-    # MIGRANT_SETUP_COMMAND and LIBVIRT_CONF_DIR are proposed upstream
-    # (see README, "Upstream changes"). Both are inert on an upstream that does
-    # not read them, and start working the day it does.
+    # LIBVIRT_CONF_DIR is the sysconfdir, not the hooks subdirectory: nixpkgs
+    # builds libvirt with --sysconfdir=/var/lib, so hooks/ and network.conf both
+    # live under it. Asserted present above.
     wrapProgram $out/bin/migrant \
       --prefix PATH : ${lib.makeBinPath runtimeDeps} \
       --set MIGRANT_SETUP_COMMAND $out/bin/migrant-doctor \

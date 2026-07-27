@@ -391,10 +391,10 @@ in
       host.succeed("test -x /var/lib/libvirt/hooks/qemu.d/migrant")
       host.succeed("test -x /var/lib/libvirt/hooks/qemu.d/migrant-loop")
       host.succeed("test -x /var/lib/libvirt/hooks/network.d/migrant")
-      # The compat shim satisfies ensure_shared_folder_images()' file test and
-      # must never be executable, or libvirt could dispatch the loop hook twice.
-      host.succeed("test -f /etc/libvirt/hooks/qemu.d/migrant-loop")
-      host.fail("test -x /etc/libvirt/hooks/qemu.d/migrant-loop")
+      # Nothing of ours belongs in /etc/libvirt: migrant honours LIBVIRT_CONF_DIR
+      # now, so the compat placeholder that used to satisfy
+      # ensure_shared_folder_images() is gone and must not come back.
+      host.fail("test -e /etc/libvirt/hooks/qemu.d/migrant-loop")
       # REAL hook invocation: default rp_filter is 1, so a fresh virbr-migrant
       # inherits it; only the network hook flips it to 0 when libvirt dispatches
       # the hook on net-start -> proves dispatch + wrapper PATH (sysctl).
@@ -447,12 +447,12 @@ in
       host.succeed(f"rm -f {conf}")
       host.succeed("su - tester -c migrant-doctor > /tmp/doctor.out")
       host.succeed("grep -Eq '^firewall backend: +default' /tmp/doctor.out")
-      # `migrant setup` must never perform imperative setup on this host. With
-      # the upstream MIGRANT_SETUP_COMMAND handoff it runs the doctor (0);
-      # without it, resolve_setup_dir exits 69 before any side effect. Anything
-      # else means the wrapper stopped protecting the host.
-      rc = int(host.succeed("su - tester -c 'migrant setup >/dev/null 2>&1; echo $?'").strip())
-      assert rc in (0, 69), f"migrant setup returned {rc}, expected 0 (handoff) or 69 (no setup dir)"
+      # `migrant setup` must hand off to the doctor rather than attempt
+      # imperative setup. Assert the doctor's own output, not just the exit
+      # code: a setup that silently did nothing would also exit 0.
+      host.succeed("su - tester -c 'migrant setup' > /tmp/setup.out")
+      host.succeed("grep -q 'managed by the migrant NixOS module' /tmp/setup.out")
+      host.succeed("grep -q 'prerequisites satisfied' /tmp/setup.out")
     '';
   };
 }

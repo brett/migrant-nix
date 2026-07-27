@@ -54,8 +54,12 @@ Log out and back in after the first rebuild so your shell picks up the `libvirt`
 group, then verify:
 
 ```bash
-migrant-doctor
+migrant setup
 ```
+
+On other distros that command configures the host. Here the module already has,
+so it runs a read-only doctor instead (also available directly as
+`migrant-doctor`).
 
 It checks libvirtd and virtlogd, group membership, `/etc/migrant`, the images
 directory, all three hooks, the runtime command closure, virtiofsd, and the
@@ -74,7 +78,6 @@ From there, every other migrant subcommand works as documented upstream:
 | `virtualisation.migrant.enable` | `false` | Enable the module. |
 | `virtualisation.migrant.users` | `[ ]` | Users added to the `libvirt` group. Requires re-login. |
 | `virtualisation.migrant.package` | this flake's `migrant` | The migrant package to install. |
-| `virtualisation.migrant.installHookDirCompatShim` | `true` | See "Upstream changes" below. |
 
 ## Notes
 
@@ -90,23 +93,21 @@ From there, every other migrant subcommand works as documented upstream:
   `cmd_setup` does on any host that is not legacy-iptables.
 - For parity with migrant's primary target (Arch with `linux-hardened`),
   consider `boot.kernelPackages = pkgs.linuxPackages_hardened`.
-- `migrant setup` does not work on NixOS and is not supposed to. Depending on
-  the pinned upstream it either runs `migrant-doctor` or exits 69 without
-  touching anything; either way it never performs imperative setup.
+- `migrant setup` never performs imperative setup here. The package points
+  `MIGRANT_SETUP_COMMAND` at `migrant-doctor`, so it runs the doctor instead.
 
-## Upstream changes
+## Environment
 
-The package sets two environment variables that upstream migrant does not read
-yet. Both are inert without them and start working the day they merge:
+The package wraps `migrant` with two overrides, both upstream since
+[#14](https://github.com/pigmonkey/migrant/pull/14). The build asserts the
+pinned migrant reads them, so an older pin fails here rather than silently
+losing them at runtime.
 
-- **`MIGRANT_SETUP_COMMAND`** — makes `migrant setup` hand off to
-  `migrant-doctor`, so there is one command name across every distro.
-- **`LIBVIRT_CONF_DIR`** — `/var/lib/libvirt`: nixpkgs builds libvirt with
-  `--sysconfdir=/var/lib`, so `hooks/` and `network.conf` both live there.
-  Until it lands, the module ships a non-executable placeholder at
-  `/etc/libvirt/hooks/qemu.d/migrant-loop` so `ensure_shared_folder_images()`
-  stops reporting "run `migrant setup` first". Set
-  `installHookDirCompatShim = false` once merged.
+- **`MIGRANT_SETUP_COMMAND`** → `migrant-doctor`, so `migrant setup` is the
+  same command on every distro.
+- **`LIBVIRT_CONF_DIR`** → `/var/lib/libvirt`, libvirt's sysconfdir rather than
+  its hooks subdirectory: nixpkgs builds libvirt with `--sysconfdir=/var/lib`,
+  so `hooks/` and `network.conf` both live under it.
 
 ## Development
 
