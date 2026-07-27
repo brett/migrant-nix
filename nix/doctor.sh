@@ -140,7 +140,12 @@ fi
 
 # firewall backend — informational, never fatal. The module leaves it unset, as
 # cmd_setup does on any host that is not legacy-iptables.
-backend=$(grep -oP '(?<=^\s*firewall_backend\s=\s")[^"]+' /etc/libvirt/network.conf 2>/dev/null | head -1 || true)
+#
+# nixpkgs builds libvirt with --sysconfdir=/var/lib, so the whole tree that is
+# normally /etc/libvirt lives at /var/lib/libvirt here: network.conf, qemu.conf,
+# nwfilter, hooks. Reading /etc/libvirt/network.conf finds nothing and silently
+# reports the default, which is wrong whenever a backend is actually pinned.
+backend=$(grep -oP '(?<=^\s*firewall_backend\s=\s")[^"]+' /var/lib/libvirt/network.conf 2>/dev/null | head -1 || true)
 row "firewall backend:" "${backend:-default (libvirt-selected)}"
 
 echo ""
