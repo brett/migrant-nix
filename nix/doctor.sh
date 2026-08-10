@@ -59,9 +59,10 @@ else
   bad
 fi
 
-# /etc/migrant — the data channel to the privileged hooks (root:libvirt, setgid).
+# /etc/migrant — the data channel to the privileged hooks (root:libvirt, setgid,
+# sticky).
 if [[ -d /etc/migrant && "$(stat -c '%G' /etc/migrant)" == libvirt \
-      && "$(stat -c '%a' /etc/migrant)" == 2770 ]]; then
+      && "$(stat -c '%a' /etc/migrant)" == 3770 ]]; then
   row "/etc/migrant:" "ok"
 else
   row "/etc/migrant:" "MISSING/wrong perms [ERROR]"
@@ -141,8 +142,11 @@ else
   bad
 fi
 
-# firewall backend — informational, never fatal. The module leaves it unset, as
-# cmd_setup does on any host that is not legacy-iptables.
+# firewall backend — fatal unless iptables. The qemu hook positions its INPUT
+# jump relative to libvirt's LIBVIRT_INP chain, which only the iptables backend
+# creates; under nftables it aborts the domain instead of starting a VM with no
+# isolation. Reading the ruleset directly would be the exact check, but that
+# needs root and this must never call sudo, so the pinned setting stands in.
 #
 # nixpkgs builds libvirt with --sysconfdir=/var/lib, so the whole tree that is
 # normally /etc/libvirt lives at /var/lib/libvirt here: network.conf, qemu.conf,
@@ -151,9 +155,34 @@ fi
 # sed, not grep -oP: a PCRE lookbehind must be fixed-width, so a leading \s*
 # makes it invalid ("length of lookbehind assertion is not limited", exit 2) and
 # 2>/dev/null turns that into a silent empty result on every host.
+# tail, not head: a duplicated key is won by the last assignment, so reading the
+# first would report iptables on a file whose effective setting is nftables.
 backend=$(sed -n 's/^[[:space:]]*firewall_backend[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
-  /var/lib/libvirt/network.conf 2>/dev/null | head -1 || true)
-row "firewall backend:" "${backend:-default (libvirt-selected)}"
+  /var/lib/libvirt/network.conf 2>/dev/null | tail -1 || true)
+if [[ "$backend" == iptables ]]; then
+  row "firewall backend:" "iptables"
+else
+  row "firewall backend:" "${backend:-default (libvirt-selected)} [ERROR]"
+  sub "note:" "isolation needs libvirt's iptables backend; VMs will refuse to start"
+  bad
+fi
+
+# bridge netfilter — fatal. -m physdev matches nothing unless bridged traffic is
+# passed to ip(6)tables, so every isolation rule silently stops applying; the
+# hook re-checks this at start and aborts the domain.
+brnf_missing=""
+for brnf_key in bridge-nf-call-iptables bridge-nf-call-ip6tables; do
+  if [[ "$(cat "/proc/sys/net/bridge/${brnf_key}" 2>/dev/null || echo 0)" != 1 ]]; then
+    brnf_missing="${brnf_missing:+${brnf_missing}, }net.bridge.${brnf_key}"
+  fi
+done
+if [[ -z "$brnf_missing" ]]; then
+  row "bridge netfilter:" "ok"
+else
+  row "bridge netfilter:" "NOT SET [ERROR]"
+  sub "note:" "$brnf_missing is not 1; physdev rules would not match"
+  bad
+fi
 
 echo ""
 if (( problems > 0 )); then

@@ -81,15 +81,37 @@ in
     users.groups.libvirt.members = cfg.users;
 
     # root:libvirt and group-writable, so unprivileged migrant (a group member)
-    # can create per-VM state. Modes match cmd_setup, including setgid on
-    # /etc/migrant.
+    # can create per-VM state. Modes match cmd_setup, including setgid and
+    # sticky on /etc/migrant.
     systemd.tmpfiles.rules = [
-      "d /etc/migrant 2770 root libvirt -"
+      "d /etc/migrant 3770 root libvirt -"
       "d /var/lib/libvirt/images 0775 root libvirt -"
     ];
 
-    # firewall_backend intentionally unset: libvirt's default is right here, and
-    # cmd_setup likewise only overrides it on legacy-iptables hosts.
+    # The qemu hook positions its INPUT jump relative to libvirt's LIBVIRT_INP
+    # chain, which exists only under the iptables backend — under nftables
+    # libvirt filters in its own table and the hook refuses to start the VM.
+    # cmd_setup pins it unconditionally for the same reason.
+    #
+    # This must be the option, not a file: libvirtd-config.service copies its
+    # generated network.conf over /var/lib/libvirt/network.conf on every start,
+    # so anything written there directly is overwritten. The option's default
+    # follows networking.nftables.enable, which is exactly the host that needs
+    # overriding. A plain definition (not mkForce) so a host that explicitly
+    # asks for nftables gets an eval conflict naming both definitions, rather
+    # than a silent override or a VM that aborts at start.
+    virtualisation.libvirtd.firewallBackend = "iptables";
+
+    # -m physdev matches nothing unless br_netfilter is loaded and bridged
+    # traffic is passed to ip(6)tables, so every isolation rule depends on both.
+    # The hook re-checks at start and aborts the domain rather than install rules
+    # that would never match. systemd-sysctl is ordered after modules-load, so
+    # the sysctls land on a loaded module.
+    boot.kernelModules = [ "br_netfilter" ];
+    boot.kernel.sysctl = {
+      "net.bridge.bridge-nf-call-iptables" = 1;
+      "net.bridge.bridge-nf-call-ip6tables" = 1;
+    };
 
     # NixOS's firewall filters reverse paths strictly (-m rpfilter --validmark).
     # A WireGuard VM's egress is fwmark-routed through a table holding only

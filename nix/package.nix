@@ -90,7 +90,7 @@ assert lib.assertMsg (missingVars == [ ]) ''
 '';
 stdenvNoCC.mkDerivation {
   pname = "migrant";
-  version = "0-unstable-2026-07-27";
+  version = "0-unstable-2026-08-04";
   inherit src;
 
   nativeBuildInputs = [ makeWrapper ];

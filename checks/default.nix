@@ -38,6 +38,7 @@ let
     VM=tvm
     MAC=52:54:00:12:34:56
     CHAIN=MIGRANT_$(printf '%s' "$VM" | md5sum | cut -c1-8)
+    CHAIN6=MIGRANT6_$(printf '%s' "$VM" | md5sum | cut -c1-8)
     fail() { echo "TEARDOWN TEST FAIL: $*" >&2; echo "--- hook.log ---" >&2; cat /run/migrant/hook.log >&2 2>/dev/null || true; exit 1; }
 
     mkdir -p /etc/migrant/$VM
@@ -60,13 +61,37 @@ let
     nft list set bridge migrant blocked_macs 2>/dev/null | grep -q "$MAC" \
       || fail "prepare: MAC not in blocked_macs"
 
-    # started: rules applied, iface recorded, MAC unblocked
+    # started: rules applied, state recorded, MAC unblocked
     "$HOOK" "$VM" started begin - < /tmp/dom.xml || fail "started hook exit $?"
     iptables -nL "$CHAIN" >/dev/null 2>&1 || fail "started: per-VM chain $CHAIN missing"
-    iptables -S FORWARD | grep 'physdev-in vnet0' | grep -q '10.0.0.0/8' \
-      || fail "started: FORWARD RFC1918 reject missing"
+    # Shared and link-local space is rejected alongside RFC 1918.
+    for net in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16; do
+      iptables -S FORWARD | grep 'physdev-in vnet0' | grep -q "$net" \
+        || fail "started: FORWARD reject for $net missing"
+    done
     ip6tables -S FORWARD | grep -q 'physdev-in vnet0 -j DROP' \
       || fail "started: IPv6 FORWARD DROP missing"
+    # guest->host IPv6: the per-VM CHAIN6 jump and the ICMPv6 policy above it.
+    ip6tables -S INPUT | grep -q "physdev-in vnet0 -j $CHAIN6" \
+      || fail "started: IPv6 INPUT jump to $CHAIN6 missing"
+    # Field order and the protocol's spelling are both iptables' choice, so match
+    # on the parts rather than a rendered rule.
+    ip6tables -S INPUT | grep 'physdev-in vnet0' | grep -v icmpv6-type \
+      | grep -- '-j REJECT' | grep -qE -- '-p (ipv6-icmp|icmpv6|58)' \
+      || fail "started: ICMPv6 catch-all reject missing"
+    # The hook accepts exactly eight types (ND 133-136 and PMTUD/error 1-4).
+    # Counted rather than named: iptables renders the type as a name of its own
+    # choosing, so asserting one by one would test that spelling, not the policy.
+    icmp6_accepts=$(ip6tables -S INPUT | grep 'physdev-in vnet0' | grep icmpv6-type | grep -c -- '-j ACCEPT')
+    [ "$icmp6_accepts" = 8 ] \
+      || fail "started: expected 8 ICMPv6 type ACCEPTs, found $icmp6_accepts"
+    # The teardown record: remove_rules undoes exactly what is listed here, so a
+    # fact the hook stopped writing strands its rule on a recycled tap name.
+    [ -f /run/migrant/$VM.state ] || fail "started: state record not written"
+    grep -qx 'version=1'    /run/migrant/$VM.state || fail "started: state version not 1"
+    grep -qx 'tap=vnet0'    /run/migrant/$VM.state || fail "started: tap not recorded"
+    grep -qx "mac=$MAC"     /run/migrant/$VM.state || fail "started: MAC not recorded"
+    grep -qx 'isolation=true' /run/migrant/$VM.state || fail "started: isolation not recorded"
     [ "$(cat /run/migrant/$VM.iface 2>/dev/null)" = vnet0 ] \
       || fail "started: iface sentinel not vnet0"
     if nft list set bridge migrant blocked_macs 2>/dev/null | grep -q "$MAC"; then
@@ -79,11 +104,15 @@ let
     iptables -S FORWARD | grep -q 'physdev-in vnet0' && fail "release: stale FORWARD rules"
     iptables -S INPUT   | grep -q 'physdev-in vnet0' && fail "release: stale INPUT rules"
     ip6tables -S FORWARD | grep -q 'physdev-in vnet0' && fail "release: stale IPv6 FORWARD rules"
+    ip6tables -S INPUT | grep -q 'physdev-in vnet0' && fail "release: stale IPv6 INPUT rules"
+    ip6tables -nL "$CHAIN6" >/dev/null 2>&1 && fail "release: per-VM chain $CHAIN6 still exists"
     iptables -S | grep -q 'MIGRANT_' && fail "release: stray MIGRANT_ chains remain"
+    ip6tables -S | grep -q 'MIGRANT6_' && fail "release: stray MIGRANT6_ chains remain"
     nft list set bridge migrant blocked_macs 2>/dev/null | grep -q "$MAC" && fail "release: MAC still in blocked_macs"
     [ -e /run/migrant/$VM.iface ] && fail "release: iface sentinel not removed"
+    [ -e /run/migrant/$VM.state ] && fail "release: state record not removed"
 
-    echo "teardown test OK: per-VM rules, chains, blocked MAC, and sentinel removed on release"
+    echo "teardown test OK: per-VM rules, chains, blocked MAC, and records removed on release"
   '';
 
   # (1) WireGuard teardown: interface + fwmark/mangle policy routing.
@@ -203,10 +232,24 @@ let
 
     "$LOOPHOOK" "$VM" prepare begin - < /tmp/loop.xml || fail "prepare exit $?"
     mountpoint -q "$SRC" || fail "prepare: $SRC not mounted"
+    # The right image mounted the wrong way is still only half the isolation.
+    findmnt -no OPTIONS "$SRC" | grep -qw nosymfollow || fail "prepare: mounted without nosymfollow"
+    # migrant verifies the running VM's shares against this record, so a hook
+    # that stops writing it makes every VM fail its post-start check.
+    printf '%s\t%s\n' "$SRC" "$SRC.img" | cmp -s - /run/migrant/$VM.shared \
+      || fail "prepare: mount record wrong: $(cat /run/migrant/$VM.shared 2>/dev/null)"
 
     "$LOOPHOOK" "$VM" release end - < /tmp/loop.xml || fail "release exit $?"
     mountpoint -q "$SRC" && fail "release: $SRC still mounted after unmount"
-    echo "loop hook OK: image mounted on prepare, unmounted on release"
+    [ -e /run/migrant/$VM.shared ] && fail "release: mount record not removed"
+
+    # Fail closed: something else already mounted where the image belongs must
+    # abort the VM, not leave virtiofsd serving it.
+    mount -t tmpfs none "$SRC" || fail "could not stage the decoy mount"
+    "$LOOPHOOK" "$VM" prepare begin - < /tmp/loop.xml && fail "prepare accepted a foreign mount"
+    umount "$SRC"
+
+    echo "loop hook OK: nosymfollow mount + record on prepare, removed on release, foreign mount refused"
   '';
 
   # (5) Lifecycle teardown: `migrant destroy` on a real (TCG) domain fires
@@ -330,7 +373,7 @@ in
     missing=""
     for c in virsh virt-install qemu-img ip wg ssh ssh-keygen xorriso curl \
              ansible-playbook iptables ip6tables nft find mkfs.ext4 debugfs \
-             mount umount awk grep sed; do
+             mount umount findmnt mountpoint realpath awk grep sed; do
       PATH="$wrapPATH" command -v "$c" >/dev/null 2>&1 || missing="$missing $c"
     done
     if [ -n "$missing" ]; then
@@ -340,6 +383,38 @@ in
     fi
     touch $out
   '';
+
+  # An nftables host is the one configuration where libvirt's own default picks
+  # the backend migrant cannot work with: virtualisation.libvirtd.firewallBackend
+  # defaults to "nftables" when networking.nftables.enable is set, and
+  # libvirtd-config.service copies its generated network.conf over the file on
+  # every start. Without the module's override there is no LIBVIRT_INP and every
+  # isolated VM aborts at start — which the default-firewall test cannot show,
+  # because nixpkgs generates "iptables" there regardless of what we do.
+  module-nftables-host = pkgs.testers.nixosTest {
+    name = "migrant-module-nftables-host";
+    nodes.host = {
+      imports = [ module ];
+      virtualisation.migrant.enable = true;
+      virtualisation.migrant.package = package;
+      networking.nftables.enable = true;
+      # For the assertions only: an nftables host has no iptables on PATH. The
+      # hooks get theirs from the module's hookPath either way.
+      environment.systemPackages = [ pkgs.iptables ];
+    };
+    testScript = ''
+      host.wait_for_unit("libvirtd.service")
+      host.wait_for_unit("migrant-network.service")
+      host.succeed("grep -q 'firewall_backend = \"iptables\"' /var/lib/libvirt/network.conf")
+      host.succeed("iptables -S INPUT | grep -q LIBVIRT_INP")
+      # The chain must carry libvirt's DHCP/DNS accepts, not merely exist: the
+      # hook appends its per-VM REJECT below them and relies on them landing first.
+      host.succeed("iptables -S LIBVIRT_INP | grep -q 'dport 67 -j ACCEPT'")
+      host.succeed("ip6tables -S INPUT | grep -q LIBVIRT_INP")
+      host.succeed("test $(cat /proc/sys/net/bridge/bridge-nf-call-iptables) = 1")
+      host.succeed("test $(cat /proc/sys/net/bridge/bridge-nf-call-ip6tables) = 1")
+    '';
+  };
 
   module = pkgs.testers.nixosTest {
     name = "migrant-module";
@@ -377,10 +452,24 @@ in
       # module membership impl (not test-injected) put tester in libvirt:
       host.succeed("id -nG tester | grep -qw libvirt")
       # perms
-      host.succeed("test $(stat -c '%a' /etc/migrant) = 2770")
+      host.succeed("test $(stat -c '%a' /etc/migrant) = 3770")
       host.succeed("test $(stat -c '%G' /etc/migrant) = libvirt")
       host.succeed("test $(stat -c '%G' /var/lib/libvirt/images) = libvirt")
       host.succeed("su - tester -c 'test -w /var/lib/libvirt/images'")
+      # Bridged traffic must reach ip(6)tables or every -m physdev rule the hook
+      # installs matches nothing; the hook aborts the domain rather than start a
+      # VM whose isolation is inert.
+      host.succeed("test $(cat /proc/sys/net/bridge/bridge-nf-call-iptables) = 1")
+      host.succeed("test $(cat /proc/sys/net/bridge/bridge-nf-call-ip6tables) = 1")
+      # The hook positions its INPUT jump relative to LIBVIRT_INP, which only
+      # libvirt's iptables backend creates. Assert both the pinned setting and
+      # the chain it is pinned for — the setting alone would not prove libvirt
+      # honoured it.
+      host.succeed("grep -q 'firewall_backend = \"iptables\"' /var/lib/libvirt/network.conf")
+      # Both families: the hook returns 7 if either INPUT lacks the chain, and
+      # libvirt only builds the v6 one because network.xml declares a ULA.
+      host.succeed("iptables -S INPUT | grep -q LIBVIRT_INP")
+      host.succeed("ip6tables -S INPUT | grep -q LIBVIRT_INP")
       # network active + carries the IPv6 (NAT66) ULA subnet
       host.succeed("virsh net-list --name | grep -qx migrant")
       host.succeed("virsh net-dumpxml migrant | grep -q fdca:6d16:2b1a")
@@ -427,26 +516,33 @@ in
       # default string for every input, and no exit-code assertion catches it.
       # nixpkgs builds libvirt with --sysconfdir=/var/lib, so this is the path
       # that matters here, not /etc/libvirt.
+      # Anything but iptables is fatal, so these runs exit 78 — execute(), not
+      # succeed(). Redirect rather than pipe: grep -q exits at the first match,
+      # and the doctor then dies on EPIPE writing its remaining rows, which
+      # pipefail reports as a failure even though the match succeeded.
       conf = "/var/lib/libvirt/network.conf"
       host.succeed(f"test -d $(dirname {conf})")
       for content, expected in [
-          ('firewall_backend = "nftables"', "nftables"),
+          ('firewall_backend = "nftables"', "nftables \\[ERROR\\]"),
           # whitespace variants libvirt or an admin may write
           ('  firewall_backend="iptables"', "iptables"),
-          ('firewall_backend\t=\t"nftables"', "nftables"),
+          ('firewall_backend\t=\t"nftables"', "nftables \\[ERROR\\]"),
           # a commented-out setting is not a setting
-          ('# firewall_backend = "iptables"', "default"),
+          ('# firewall_backend = "iptables"', "default .*\\[ERROR\\]"),
       ]:
           host.succeed(f"printf '%s\\n' '{content}' > {conf}")
-          # Redirect rather than pipe: grep -q exits at the first match, and the
-          # doctor then dies on EPIPE writing its remaining rows, which pipefail
-          # reports as a failure even though the match succeeded.
-          host.succeed("su - tester -c migrant-doctor > /tmp/doctor.out")
+          host.execute("su - tester -c migrant-doctor > /tmp/doctor.out")
           host.succeed(f"grep -Eq '^firewall backend: +{expected}' /tmp/doctor.out")
-      # absent file must also read as the default, not as an error
+      # absent file reads as the default, which is not what the hook needs either
       host.succeed(f"rm -f {conf}")
-      host.succeed("su - tester -c migrant-doctor > /tmp/doctor.out")
-      host.succeed("grep -Eq '^firewall backend: +default' /tmp/doctor.out")
+      host.execute("su - tester -c migrant-doctor > /tmp/doctor.out")
+      host.succeed("grep -Eq '^firewall backend: +default .*\\[ERROR\\]' /tmp/doctor.out")
+      # The doctor must fail, not merely annotate: a wrong backend means no VM
+      # can start, and `migrant setup` exiting 0 would hide that.
+      host.fail("su - tester -c migrant-doctor > /tmp/doctor.out")
+      # Restore what the module declares, so the handoff assertions below see a
+      # healthy host rather than the state this table left behind.
+      host.succeed(f"printf '%s\\n' 'firewall_backend = \"iptables\"' > {conf}")
       # `migrant setup` must hand off to the doctor rather than attempt
       # imperative setup. Assert the doctor's own output, not just the exit
       # code: a setup that silently did nothing would also exit 0.
