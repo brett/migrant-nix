@@ -14,7 +14,8 @@ in migrant itself upstream, and bugs in the packaging here.
 
 `migrant setup` is imperative host configuration: it enables libvirtd, adds you
 to the `libvirt` group, creates `/etc/migrant` and the images directory with
-specific ownership, installs three libvirt hooks, and defines a NAT network.
+specific ownership, pins libvirt's firewall backend, loads `br_netfilter` and
+its two sysctls, installs three libvirt hooks, and defines a NAT network.
 On NixOS that work belongs in the system configuration, so this flake provides a
 module that does all of it declaratively — plus a read-only `migrant-doctor`
 that verifies the result.
@@ -62,11 +63,11 @@ so it runs a read-only doctor instead (also available directly as
 `migrant-doctor`).
 
 It checks libvirtd and virtlogd, group membership, `/etc/migrant`, the images
-directory, all three hooks, the runtime command closure, virtiofsd, and the
-`migrant` network. A missing module-provided prerequisite is fatal (exit 78);
-host-hardware and degraded conditions — no KVM, a network predating the IPv6
-subnet, virtiofsd not wired — are warnings. It never calls `sudo` and never
-changes anything.
+directory, all three hooks, the runtime command closure, virtiofsd, the
+`migrant` network, libvirt's firewall backend, and bridge netfilter. A missing
+module-provided prerequisite is fatal (exit 78); host-hardware and degraded
+conditions — no KVM, a network predating the IPv6 subnet, virtiofsd not wired —
+are warnings. It never calls `sudo` and never changes anything.
 
 From there, every other migrant subcommand works as documented upstream:
 `migrant up`, `status`, `ssh`, `destroy`, and so on.
@@ -89,8 +90,8 @@ From there, every other migrant subcommand works as documented upstream:
   module warns if something sets it back to strict, because the failure is
   otherwise silent — the tunnel handshakes and counts bytes while nothing gets
   through.
-- libvirt's `firewall_backend` is left unset, matching what upstream
-  `cmd_setup` does on any host that is not legacy-iptables.
+- The module pins `virtualisation.libvirtd.firewallBackend = "iptables"`, which
+  migrant's hooks require; a host that enables nftables gets an eval conflict.
 - For parity with migrant's primary target (Arch with `linux-hardened`),
   consider `boot.kernelPackages = pkgs.linuxPackages_hardened`.
 - `migrant setup` never performs imperative setup here. The package points
@@ -122,6 +123,7 @@ real packaged hooks through `prepare -> started -> release` for isolation,
 WireGuard, NAT66, host-access, and the loop image, starts a virtiofs domain,
 runs a real `migrant destroy` against a TCG domain, and asserts the doctor
 passes as an unprivileged user with no `sudo` on the system.
+`module-nftables-host` re-checks the host setup with nftables enabled.
 
 ### Bumping the pinned migrant
 
@@ -156,8 +158,8 @@ same host setup. When migrant grows a new one:
    new command the CLI calls to `runtimeDeps` in `nix/package.nix`
 4. Extend `checks/default.nix` to cover it
 
-Run `nixfmt` on any `.nix` file you touch. `nix/doctor.sh` is built with
-`writeShellApplication`, so shellcheck runs at build time and must be clean.
+Run `nixfmt` on any `.nix` file you touch. `nix/doctor.sh` is covered by the
+`doctor-shellcheck` flake check, so shellcheck must be clean.
 
 ## License
 
