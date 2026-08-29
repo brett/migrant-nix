@@ -76,7 +76,10 @@ let
     "MIGRANT_SETUP_COMMAND"
     "LIBVIRT_CONF_DIR"
   ];
-  missingVars = lib.filter (v: !lib.hasInfix v script) requiredVars;
+
+  containsInfix =
+    needle: haystack: builtins.length (builtins.split (lib.escapeRegex needle) haystack) > 1;
+  missingVars = lib.filter (v: !containsInfix v script) requiredVars;
 in
 assert lib.assertMsg (missingAssets == [ ]) ''
   migrant-nix: the pinned migrant input is missing setup/ assets: ${lib.concatStringsSep ", " missingAssets}
