@@ -88,7 +88,11 @@ let
     # The teardown record: remove_rules undoes exactly what is listed here, so a
     # fact the hook stopped writing strands its rule on a recycled tap name.
     [ -f /run/migrant/$VM.state ] || fail "started: state record not written"
-    grep -qx 'version=1'    /run/migrant/$VM.state || fail "started: state version not 1"
+    WANT_VERSION=$(grep -m1 '^STATE_VERSION_CURRENT=' ${package}/share/migrant/hooks/qemu.d/migrant | cut -d= -f2)
+    printf '%s' "$WANT_VERSION" | grep -qE '^[0-9]+$' \
+      || fail "cannot read STATE_VERSION_CURRENT from the packaged hook"
+    grep -qx "version=$WANT_VERSION" /run/migrant/$VM.state \
+      || fail "started: state version not $WANT_VERSION"
     grep -qx 'tap=vnet0'    /run/migrant/$VM.state || fail "started: tap not recorded"
     grep -qx "mac=$MAC"     /run/migrant/$VM.state || fail "started: MAC not recorded"
     grep -qx 'isolation=true' /run/migrant/$VM.state || fail "started: isolation not recorded"
