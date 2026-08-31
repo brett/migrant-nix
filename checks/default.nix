@@ -382,7 +382,7 @@ in
     missing=""
     for c in virsh virt-install qemu-img ip wg ssh ssh-keygen xorriso curl \
              ansible-playbook iptables ip6tables nft find mkfs.ext4 debugfs \
-             mount umount findmnt mountpoint realpath awk grep sed; do
+             mount umount findmnt mountpoint realpath awk grep sed tar zstd; do
       PATH="$wrapPATH" command -v "$c" >/dev/null 2>&1 || missing="$missing $c"
     done
     if [ -n "$missing" ]; then

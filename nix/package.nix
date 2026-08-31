@@ -26,6 +26,10 @@
   nftables,
   e2fsprogs,
   findutils,
+  # archive/restore (upstream 35a7c04). zstd is invoked by tar, so it needs its
+  # own PATH entry; upstream preflights it and the error text says to run pacman.
+  gnutar,
+  zstd,
   coreutils,
   gnugrep,
   gnused,
@@ -48,6 +52,8 @@ let
     nftables
     e2fsprogs
     findutils
+    gnutar
+    zstd
     coreutils
     gnugrep
     gnused
@@ -100,7 +106,7 @@ assert lib.assertMsg (missingVars == [ ]) ''
 '';
 stdenvNoCC.mkDerivation {
   pname = "migrant";
-  version = "0-unstable-2026-08-04";
+  version = "0-unstable-2026-08-30";
   inherit src;
 
   nativeBuildInputs = [ makeWrapper ];

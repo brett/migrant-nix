@@ -3,11 +3,11 @@
     "migrant": {
       "flake": false,
       "locked": {
-        "lastModified": 1787964496,
-        "narHash": "sha256-jliAB/GRHci4Io5ytmG+cSuqb6hZunS4MFPqCQQyvvk=",
+        "lastModified": 1788069355,
+        "narHash": "sha256-qeMvKOw1qKomkXWoMdMrNKkwa8cOMAGeUtqDonJV2Ro=",
         "owner": "pigmonkey",
         "repo": "migrant",
-        "rev": "e174b8938e86a081432fb7c111182bf43ec32933",
+        "rev": "6fc008a5f500c17ef21a38f421272472596adfd6",
         "type": "github"
       },
       "original": {
