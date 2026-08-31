@@ -88,6 +88,11 @@ let
     # The teardown record: remove_rules undoes exactly what is listed here, so a
     # fact the hook stopped writing strands its rule on a recycled tap name.
     [ -f /run/migrant/$VM.state ] || fail "started: state record not written"
+    # NOT a hardcoded version. Upstream bumps STATE_VERSION_CURRENT whenever the
+    # teardown record gains keys (1 -> 2 between 1a53cdf and e174b89), so a
+    # literal here fails the very bump it is meant to validate, for a change
+    # that is expected and correct. Read it from the packaged hook — the same
+    # approach upstream's own test/test-forward-port.sh takes.
     WANT_VERSION=$(grep -m1 '^STATE_VERSION_CURRENT=' ${package}/share/migrant/hooks/qemu.d/migrant | cut -d= -f2)
     printf '%s' "$WANT_VERSION" | grep -qE '^[0-9]+$' \
       || fail "cannot read STATE_VERSION_CURRENT from the packaged hook"

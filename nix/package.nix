@@ -77,6 +77,13 @@ let
     "LIBVIRT_CONF_DIR"
   ];
 
+  # NOT lib.hasInfix: it recurses once per character of the haystack, so it
+  # stack-overflows on a large file. `migrant` crossed that threshold between
+  # 1a53cdf (76,842 bytes, evaluates) and e174b89 (96,703 bytes, overflows) —
+  # measured: hasInfix over 76,000 chars returns; over 96,000 it throws
+  # "stack overflow (possible infinite recursion)" with no trace, which reads
+  # like an upstream bug rather than a limit in this assertion. builtins.split
+  # is implemented natively and does not recurse, so it scales with the script.
   containsInfix =
     needle: haystack: builtins.length (builtins.split (lib.escapeRegex needle) haystack) > 1;
   missingVars = lib.filter (v: !containsInfix v script) requiredVars;
