@@ -372,12 +372,12 @@ in
         touch $out
       '';
 
-  cli-closure = pkgs.runCommand "migrant-cli-closure" { } ''
-    # Guards runtimeDeps: every external command the CLI shells out to must
-    # resolve on the wrapped PATH. Keep the list current with the script.
-    # (Hooks' command set is covered by the module test's pinned hookPath.)
-    # systemctl and timedatectl are deliberately absent: they must come from the
-    # host's own systemd, not a pinned one that could outrank it.
+  cli-closure = pkgs.runCommand "migrant-cli-closure" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+    # (1) Guards runtimeDeps: every command listed must resolve on the wrapped
+    # PATH. (Hooks are covered by the module test's pinned hookPath.)
+    # Deliberately absent: systemctl and timedatectl (must be the host's own,
+    # not a pinned one that could outrank it), sudo (must be the host's setuid
+    # binary), cmp (only reachable from cmd_setup, which the wrapper disables).
     wrapPATH=$(grep -oE "/nix/store/[^'\"]*/bin" ${package}/bin/migrant | sort -u | paste -sd:)
     missing=""
     for c in virsh virt-install qemu-img ip wg ssh ssh-keygen xorriso curl \
@@ -388,6 +388,27 @@ in
     if [ -n "$missing" ]; then
       echo "FAIL: runtimeDeps does not provide:$missing" >&2
       echo "add the providing package to runtimeDeps in nix/package.nix" >&2
+      exit 1
+    fi
+
+    # (2) Drift tripwire. The list above only catches commands someone already
+    # thought of, so a bump introducing a new one passes green — which is how
+    # archive/restore's `tar` and `zstd` would have shipped. Snapshot the
+    # script's command-position tokens instead and fail when the set changes.
+    python3 ${./cli-tokens.py} ${package}/bin/.migrant-wrapped > tokens.actual
+    if ! diff -u ${./cli-tokens.txt} tokens.actual > tokens.diff; then
+      echo "FAIL: the migrant script's command-position tokens changed." >&2
+      echo "" >&2
+      cat tokens.diff >&2
+      echo "" >&2
+      echo "For each ADDED token, ask: is it an external command?" >&2
+      echo "  yes -> add its package to runtimeDeps in nix/package.nix AND to" >&2
+      echo "         the explicit list above, then refresh the snapshot" >&2
+      echo "  no  -> it is prose, a subcommand or a variable; just refresh" >&2
+      echo "" >&2
+      echo "Refresh with:" >&2
+      echo "  nix build .#migrant && python3 checks/cli-tokens.py \\" >&2
+      echo "    result/bin/.migrant-wrapped > checks/cli-tokens.txt" >&2
       exit 1
     fi
     touch $out
