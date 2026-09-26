@@ -109,6 +109,12 @@ stdenvNoCC.mkDerivation {
   version = "0-unstable-2026-08-30";
   inherit src;
 
+  # The hook's shared bridge drop rule: one atomic nft transaction instead of
+  # a gate on `nft add chain`, which succeeds on an existing chain and so
+  # appended a copy on every VM start (1,705 on gs-ci-1 after two days).
+  # Upstream pigmonkey/migrant has the same gate at df2cda8.
+  patches = [ ./patches/qemu-hook-bridge-drop-rule-once.patch ];
+
   nativeBuildInputs = [ makeWrapper ];
   dontBuild = true;
 

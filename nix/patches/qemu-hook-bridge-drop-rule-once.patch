@@ -1,0 +1,24 @@
+--- a/setup/qemu-hook	2026-09-26 23:13:14.558801496 +0000
++++ b/setup/qemu-hook	2026-09-26 23:13:14.705218293 +0000
+@@ -191,10 +191,17 @@
+   nft add table bridge migrant 2>/dev/null || true
+   nft add set bridge migrant blocked_macs \
+     '{ type ether_addr ; }' 2>/dev/null || true
+-  if nft add chain bridge migrant prerouting \
+-      '{ type filter hook prerouting priority -200 ; policy accept ; }' 2>/dev/null; then
+-    nft add rule bridge migrant prerouting ether saddr @blocked_macs drop
+-  fi
++  # One atomic transaction: create the chain if it is missing, and leave
++  # exactly one drop rule in it. `nft add chain` succeeds when the chain
++  # exists, so gating the rule on it appended a copy on every start; a
++  # separate create-then-add would leave a window (or, if interrupted, a
++  # chain with no rule at all) in which a racing hook skips the rule. The
++  # flush also removes copies an older hook appended.
++  nft -f - <<'NFT'
++add chain bridge migrant prerouting { type filter hook prerouting priority -200 ; policy accept ; }
++flush chain bridge migrant prerouting
++add rule bridge migrant prerouting ether saddr @blocked_macs drop
++NFT
+ 
+   # Remove any stale entry from a previous failed setup, then block every NIC.
+   local mac
