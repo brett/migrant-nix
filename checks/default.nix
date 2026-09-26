@@ -60,6 +60,15 @@ let
     "$HOOK" "$VM" prepare begin - < /tmp/dom.xml || fail "prepare hook exit $?"
     nft list set bridge migrant blocked_macs 2>/dev/null | grep -q "$MAC" \
       || fail "prepare: MAC not in blocked_macs"
+    # The shared drop rule exists exactly once: a prepare collapses copies an
+    # older hook appended, and concurrent prepares neither duplicate nor drop it.
+    for _ in 1 2 3; do nft add rule bridge migrant prerouting ether saddr @blocked_macs drop; done
+    for _ in 1 2 3 4 5 6 7 8; do "$HOOK" "$VM" prepare begin - < /tmp/dom.xml & done
+    wait
+    drops=$(nft list chain bridge migrant prerouting | grep -c '@blocked_macs drop')
+    [ "$drops" = 1 ] || fail "prepare: $drops bridge drop rules, want 1"
+    nft list set bridge migrant blocked_macs 2>/dev/null | grep -q "$MAC" \
+      || fail "prepare: MAC not in blocked_macs after repeated prepares"
 
     # started: rules applied, state recorded, MAC unblocked
     "$HOOK" "$VM" started begin - < /tmp/dom.xml || fail "started hook exit $?"
