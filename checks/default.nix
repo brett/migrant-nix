@@ -455,6 +455,141 @@ in
     '';
   };
 
+  # A switch that changes the hooks must restart libvirtd (so libvirtd-config
+  # re-links them), one that does not must leave it alone, and a running VM must
+  # come through the restart with its isolation rules intact. Driven with real
+  # switch-to-configuration runs between specialisations, because the whole
+  # point is how switch-to-configuration treats the units involved.
+  module-hook-restart =
+    let
+      # The packaged hooks plus a trailing comment: different bytes, so a
+      # different store path, and still a working hook if dispatched.
+      changedHooks = package.hooks.overrideAttrs (old: {
+        postInstall = (old.postInstall or "") + ''
+          echo '# migrant-nix test: changed' >> $out/qemu.d/migrant
+        '';
+      });
+      hooksChanged = package // {
+        hooks = changedHooks;
+      };
+      # A different CLI over byte-identical hooks: must NOT restart libvirtd.
+      cliChanged = package.overrideAttrs (old: {
+        postInstall = (old.postInstall or "") + ''
+          touch $out/share/migrant/cli-changed
+        '';
+      });
+    in
+    pkgs.testers.nixosTest {
+      name = "migrant-module-hook-restart";
+      nodes.host =
+        { lib, ... }:
+        {
+          imports = [ module ];
+          virtualisation.migrant.enable = true;
+          virtualisation.migrant.users = [ "tester" ];
+          virtualisation.migrant.package = package;
+          users.users.tester.isNormalUser = true;
+          specialisation = {
+            cli-changed.configuration.virtualisation.migrant.package = lib.mkForce cliChanged;
+            hooks-changed.configuration.virtualisation.migrant.package = lib.mkForce hooksChanged;
+            # The base hooks with the restart turned off: switching here from
+            # hooks-changed leaves libvirtd on stale links.
+            opt-out.configuration.virtualisation.migrant.restartLibvirtdOnHookChange = false;
+          };
+        };
+      testScript = ''
+        HOOKS = ["qemu.d/migrant", "qemu.d/migrant-loop", "network.d/migrant"]
+        VM = "rsvm"
+        # The link is the PATH-pinning wrapper; the marker is in the hook it execs.
+        CHANGED = (
+            "grep -q 'migrant-nix test: changed' "
+            "$(grep -o '/nix/store/[^ ]*/qemu.d/migrant' /var/lib/libvirt/hooks/qemu.d/migrant)"
+        )
+
+        def invocation():
+            host.succeed("systemctl is-active --quiet libvirtd.service")
+            return host.succeed("systemctl show -P InvocationID libvirtd.service").strip()
+
+        def links():
+            return {r: host.succeed(f"readlink /var/lib/libvirt/hooks/{r}").strip() for r in HOOKS}
+
+        def manifest():
+            text = host.succeed("cat /etc/migrant-nix/hooks")
+            return {rel: path for rel, path in (line.split() for line in text.splitlines())}
+
+        def switch(spec=None):
+            top = "/run/booted-system" + (f"/specialisation/{spec}" if spec else "")
+            host.succeed(f"{top}/bin/switch-to-configuration test >&2")
+
+        def qemu_pid():
+            return host.succeed(f"pgrep -f 'guest={VM},'").strip()
+
+        def assert_vm_survived(pid):
+            assert qemu_pid() == pid, "the domain's qemu process did not survive"
+            host.succeed(f"virsh domstate {VM} | grep -qx running")
+            host.succeed(f"iptables -nL {chain} >/dev/null")
+
+        host.wait_for_unit("libvirtd.service")
+        host.wait_for_unit("migrant-network.service")
+        host.wait_for_unit("migrant-hooks-reload.service")
+        # At boot libvirtd-config has just linked the hooks: nothing to do.
+        host.succeed("journalctl -u migrant-hooks-reload.service | grep -q 'migrant hooks are current'")
+        assert links() == manifest(), f"{links()} != {manifest()}"
+
+        # A running isolated TCG domain, which also keeps libvirtd from idling out.
+        host.succeed(f"mkdir -p /etc/migrant/{VM} && : > /etc/migrant/{VM}/network-isolation")
+        host.succeed(
+            "virsh define /dev/stdin <<'XML'\n"
+            f"<domain type='qemu'><name>{VM}</name><description>managed-by=migrant</description>"
+            "<memory unit='MiB'>128</memory><vcpu>1</vcpu>"
+            "<os><type arch='x86_64' machine='pc'>hvm</type></os><devices>"
+            "<interface type='network'><mac address='52:54:00:51:52:53'/><source network='migrant'/>"
+            "<model type='virtio'/></interface><serial type='pty'/></devices></domain>\n"
+            "XML"
+        )
+        host.succeed(f"virsh start {VM}")
+        chain = "MIGRANT_" + host.succeed(f"printf %s {VM} | md5sum | cut -c1-8").strip()
+        host.wait_until_succeeds(f"iptables -nL {chain} >/dev/null", timeout=30)
+        pid = qemu_pid()
+
+        with subtest("a CLI-only change leaves libvirtd alone"):
+            before, before_links = invocation(), links()
+            cli = host.succeed("readlink -f /run/current-system/sw/bin/migrant")
+            switch("cli-changed")
+            assert host.succeed("readlink -f /run/current-system/sw/bin/migrant") != cli, "spec did not change the CLI"
+            assert invocation() == before, "libvirtd restarted although no hook changed"
+            assert links() == before_links
+
+        with subtest("a hook change restarts libvirtd and re-links the hooks"):
+            before, before_links = invocation(), links()
+            switch("hooks-changed")
+            assert manifest() != {r: before_links[r] for r in HOOKS}, "spec did not change the hooks"
+            assert invocation() != before, "libvirtd was not restarted"
+            assert links() == manifest(), f"{links()} != {manifest()}"
+            host.succeed(CHANGED)
+            host.succeed("journalctl -u migrant-hooks-reload.service | grep -q 'restarting libvirtd'")
+            assert_vm_survived(pid)
+
+        with subtest("opted out: no restart"):
+            before = invocation()
+            switch("opt-out")
+            host.fail("systemctl cat migrant-hooks-reload.service")
+            assert invocation() == before, "libvirtd restarted although opted out"
+            assert links() != manifest()
+
+        with subtest("the unit's first appearance restarts libvirtd onto the current hooks"):
+            before = invocation()
+            switch()
+            assert invocation() != before, "libvirtd was not restarted"
+            assert links() == manifest(), f"{links()} != {manifest()}"
+            host.fail(CHANGED)
+            assert_vm_survived(pid)
+
+        host.succeed(f"virsh destroy {VM}")
+        host.wait_until_fails(f"iptables -nL {chain} >/dev/null", timeout=30)
+      '';
+    };
+
   module = pkgs.testers.nixosTest {
     name = "migrant-module";
     nodes.host =

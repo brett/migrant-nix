@@ -79,6 +79,35 @@ From there, every other migrant subcommand works as documented upstream:
 | `virtualisation.migrant.enable` | `false` | Enable the module. |
 | `virtualisation.migrant.users` | `[ ]` | Users added to the `libvirt` group. Requires re-login. |
 | `virtualisation.migrant.package` | this flake's `migrant` | The migrant package to install. |
+| `virtualisation.migrant.restartLibvirtdOnHookChange` | `true` | Restart libvirtd during a switch that changes the hooks. See below. |
+
+### Hook changes and libvirtd
+
+NixOS links libvirt hooks into `/var/lib/libvirt/hooks` from
+`libvirtd-config.service`, which runs only when libvirtd starts, and it marks
+libvirtd `restartIfChanged = false`. So a `nixos-rebuild switch` that changes
+migrant's hooks leaves libvirtd on the old ones: the links keep pointing at the
+previous store paths, and a garbage collection in between leaves them dangling.
+Upstream's `migrant setup` restarts libvirtd after changing a hook for the same
+reason.
+
+With `restartLibvirtdOnHookChange` (the default), a small oneshot,
+`migrant-hooks-reload`, carries the expected hook paths. The switch restarts it
+only when those paths change; it compares them with the live links and runs
+`systemctl try-restart libvirtd` if they differ. That re-runs
+`libvirtd-config`, which re-links the hooks. A switch that changes nothing in
+the hooks — including a migrant bump that touches only the CLI, since the hooks
+are their own derivation — does not restart libvirtd.
+
+The trade-off: a restart drops libvirt client connections (an open `virsh
+console`, `virt-manager`) and briefly makes the API unavailable, so a `migrant`
+command caught mid-flight can fail. Running VMs are
+not affected — libvirtd's unit uses `KillMode=process`, so the restart stops
+only the daemon, which reattaches to its domains when it starts. The first
+switch after enabling this restarts libvirtd once, because the unit is new and
+the hook paths move to the split-out derivation.
+
+Set it to `false` to restart libvirtd yourself at a time of your choosing.
 
 ## Notes
 
@@ -124,6 +153,8 @@ WireGuard, NAT66, host-access, and the loop image, starts a virtiofs domain,
 runs a real `migrant destroy` against a TCG domain, and asserts the doctor
 passes as an unprivileged user with no `sudo` on the system.
 `module-nftables-host` re-checks the host setup with nftables enabled.
+`module-hook-restart` switches between specialisations with a running VM and
+asserts libvirtd restarts exactly when the hooks change and the VM survives it.
 
 ### Bumping the pinned migrant
 

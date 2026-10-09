@@ -31,6 +31,12 @@ let
     pkgs.gawk
   ];
 
+  # The package's hooks-only derivation, so the wrappers below (and with them
+  # the libvirtd restart) move only when a hook does. A package without it —
+  # an override predating the split — falls back to the old layout, at the cost
+  # of a restart on every change to that package.
+  hooksDir = migrantPkg.hooks or "${migrantPkg}/share/migrant/hooks";
+
   # Pin PATH to exactly hookPath (a root firewall hook must not inherit the
   # caller's PATH) and exec the staged hook, preserving stdin and argv. Its
   # shebang was patched to the store bash at build time, so NixOS having no
@@ -39,8 +45,20 @@ let
     rel:
     pkgs.writeShellScript "migrant-hook-${builtins.replaceStrings [ "/" ] [ "-" ] rel}" ''
       export PATH=${hookPath}
-      exec ${migrantPkg}/share/migrant/hooks/${rel} "$@"
+      exec ${hooksDir}/${rel} "$@"
     '';
+
+  # Keyed by path under /var/lib/libvirt/hooks.
+  hookWrappers = lib.genAttrs [
+    "qemu.d/migrant"
+    "qemu.d/migrant-loop"
+    "network.d/migrant"
+  ] wrapHook;
+
+  # What each hook link should resolve to. Read by migrant-hooks-reload.
+  hookManifest = pkgs.writeText "migrant-hooks-manifest" (
+    lib.concatStrings (lib.mapAttrsToList (rel: path: "${rel} ${path}\n") hookWrappers)
+  );
 in
 {
   options.virtualisation.migrant = {
@@ -63,6 +81,23 @@ in
       '';
     };
 
+    restartLibvirtdOnHookChange = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Restart libvirtd during a switch that changes the migrant hooks.
+
+        NixOS links the hooks into /var/lib/libvirt/hooks from
+        libvirtd-config.service, which runs only when libvirtd starts, and it
+        never restarts libvirtd on a switch. Without this, a switch that changes
+        the hooks leaves the links on the old store paths until libvirtd next
+        restarts, and a garbage collection in between leaves them dangling.
+
+        Running VMs are not affected: libvirtd's unit uses KillMode=process, so
+        a restart stops only the daemon, and it reattaches to its domains on
+        start. Set to false to restart libvirtd yourself.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -132,9 +167,61 @@ in
     # /var/lib/libvirt/hooks/<driver>.d, where its libvirt dispatches from and
     # where it wipes anything not registered here. /etc/libvirt/hooks via
     # environment.etc is never dispatched on NixOS.
-    virtualisation.libvirtd.hooks.qemu."migrant" = wrapHook "qemu.d/migrant";
-    virtualisation.libvirtd.hooks.qemu."migrant-loop" = wrapHook "qemu.d/migrant-loop";
-    virtualisation.libvirtd.hooks.network."migrant" = wrapHook "network.d/migrant";
+    virtualisation.libvirtd.hooks.qemu."migrant" = hookWrappers."qemu.d/migrant";
+    virtualisation.libvirtd.hooks.qemu."migrant-loop" = hookWrappers."qemu.d/migrant-loop";
+    virtualisation.libvirtd.hooks.network."migrant" = hookWrappers."network.d/migrant";
+
+    # The expected hook paths, for checking a host by hand (and the tests).
+    # Not under /etc/migrant, which is the hooks' state directory, nor
+    # /etc/libvirt, which NixOS never reads.
+    environment.etc."migrant-nix/hooks".source = hookManifest;
+
+    # libvirtd has restartIfChanged = false, and libvirtd-config.service — the
+    # oneshot that re-links the hooks — runs only as a requirement of libvirtd
+    # starting, so a switch alone never re-links them. restartTriggers on
+    # libvirtd would do nothing: switch-to-configuration skips a unit marked
+    # X-RestartIfChanged=false however its file changed, and flipping that to
+    # true would also restart libvirtd on every libvirt or config change.
+    #
+    # Instead this unit embeds the manifest, so switch-to-configuration
+    # restarts it exactly when a hook path changes (and starts it the first time
+    # it appears). It compares the live links with the manifest and restarts
+    # libvirtd only if they differ, which also makes it a no-op at boot, where
+    # libvirtd-config has just linked them. try-restart: an idle libvirtd
+    # (socket-activated, --timeout 120) re-links on its next start anyway.
+    #
+    # Wants/After, never Requires: a Requires= on libvirtd would propagate the
+    # restart back into this unit while it is still running.
+    systemd.services.migrant-hooks-reload = lib.mkIf cfg.restartLibvirtdOnHookChange {
+      description = "Restart libvirtd when the migrant hooks change";
+      after = [ "libvirtd.service" ];
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      path = [
+        pkgs.coreutils
+        config.systemd.package
+      ];
+      script = ''
+        stale=""
+        while read -r rel want; do
+          have=$(readlink "/var/lib/libvirt/hooks/$rel" || true)
+          [ "$have" = "$want" ] || stale="$stale $rel"
+        done < ${hookManifest}
+        if [ -z "$stale" ]; then
+          echo "migrant hooks are current"
+          exit 0
+        fi
+        if ! systemctl is-active --quiet libvirtd.service; then
+          echo "migrant hooks changed:$stale; libvirtd is idle and links them when it next starts"
+          exit 0
+        fi
+        echo "migrant hooks changed:$stale; restarting libvirtd (running VMs are left alone)"
+        systemctl try-restart libvirtd.service
+      '';
+    };
 
     # Define and autostart the migrant network idempotently from the packaged
     # XML. NixOS has no first-class "define a libvirt network" option, so a root

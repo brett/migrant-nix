@@ -93,6 +93,37 @@ let
   containsInfix =
     needle: haystack: builtins.length (builtins.split (lib.escapeRegex needle) haystack) > 1;
   missingVars = lib.filter (v: !containsInfix v script) requiredVars;
+
+  # The libvirt hooks, as their own derivation built from only the three hook
+  # files. builtins.path imports each one by content, so this store path moves
+  # when a hook's bytes change (or the bash its shebang is patched to), and NOT
+  # on an upstream commit that touches only the CLI, nor on a doctor edit. The
+  # module restarts libvirtd whenever these paths change, so on a host running
+  # VMs that difference is a daemon restart, not cosmetics.
+  #
+  # Upstream ships the hooks 0644 (its own install_hook chmods at install time)
+  # with #!/bin/bash, which does not exist on NixOS. Fix both here, and rename
+  # into the layout libvirt dispatches from.
+  hookSrc =
+    name:
+    builtins.path {
+      path = "${src}/setup/${name}";
+      name = "migrant-${name}";
+    };
+  hooks = stdenvNoCC.mkDerivation {
+    # No version in the name: it would move the path on every bump.
+    name = "migrant-hooks";
+    dontUnpack = true;
+    dontBuild = true;
+    installPhase = ''
+      runHook preInstall
+      install -Dm755 ${hookSrc "qemu-hook"}    $out/qemu.d/migrant
+      install -Dm755 ${hookSrc "loop-hook"}    $out/qemu.d/migrant-loop
+      install -Dm755 ${hookSrc "network-hook"} $out/network.d/migrant
+      patchShebangs $out
+      runHook postInstall
+    '';
+  };
 in
 assert lib.assertMsg (missingAssets == [ ]) ''
   migrant-nix: the pinned migrant input is missing setup/ assets: ${lib.concatStringsSep ", " missingAssets}
@@ -125,13 +156,10 @@ stdenvNoCC.mkDerivation {
     # The build sandbox has no /usr/bin/env.
     patchShebangs $out/bin/migrant
 
-    # Upstream ships the hooks 0644 (its own install_hook chmods at install
-    # time) with #!/bin/bash, which does not exist on NixOS. Fix both here, and
-    # rename into the layout libvirt dispatches from.
-    install -Dm755 setup/qemu-hook    $out/share/migrant/hooks/qemu.d/migrant
-    install -Dm755 setup/loop-hook    $out/share/migrant/hooks/qemu.d/migrant-loop
-    install -Dm755 setup/network-hook $out/share/migrant/hooks/network.d/migrant
-    patchShebangs $out/share/migrant/hooks
+    # The hooks are their own derivation (see `hooks` above); keep them
+    # reachable at the path they always had.
+    mkdir -p $out/share/migrant
+    ln -s ${hooks} $out/share/migrant/hooks
 
     install -Dm644 setup/network.xml $out/share/migrant/network.xml
     install -Dm644 setup/_migrant    $out/share/zsh/site-functions/_migrant
@@ -158,6 +186,8 @@ stdenvNoCC.mkDerivation {
 
     runHook postInstall
   '';
+
+  passthru = { inherit hooks; };
 
   meta = {
     description = "Secure, ephemeral libvirt/QEMU VM manager for coding agents";
