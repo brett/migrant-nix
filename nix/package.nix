@@ -110,16 +110,34 @@ let
       path = "${src}/setup/${name}";
       name = "migrant-${name}";
     };
+  # Patches to the hook files (paths relative to the upstream repo root).
+  #
+  # The shared bridge drop rule: one atomic nft transaction instead of a gate
+  # on `nft add chain`, which succeeds on an existing chain and so appended a
+  # copy on every VM start (1,705 on gs-ci-1 after two days). Upstream
+  # pigmonkey/migrant has the same gate at df2cda8.
+  hookPatches = [ ./patches/qemu-hook-bridge-drop-rule-once.patch ];
   hooks = stdenvNoCC.mkDerivation {
     # No version in the name: it would move the path on every bump.
     name = "migrant-hooks";
     dontUnpack = true;
     dontBuild = true;
+    # The hook patches apply HERE: this derivation is what libvirt runs. A patch
+    # on the package itself would only touch a copy nothing executes, since the
+    # package's share/migrant/hooks is a symlink to this derivation.
     installPhase = ''
       runHook preInstall
-      install -Dm755 ${hookSrc "qemu-hook"}    $out/qemu.d/migrant
-      install -Dm755 ${hookSrc "loop-hook"}    $out/qemu.d/migrant-loop
-      install -Dm755 ${hookSrc "network-hook"} $out/network.d/migrant
+      mkdir setup
+      cp ${hookSrc "qemu-hook"}    setup/qemu-hook
+      cp ${hookSrc "loop-hook"}    setup/loop-hook
+      cp ${hookSrc "network-hook"} setup/network-hook
+      chmod u+w setup/*
+      for p in ${lib.concatMapStringsSep " " (p: "${p}") hookPatches}; do
+        patch -p1 < "$p"
+      done
+      install -Dm755 setup/qemu-hook    $out/qemu.d/migrant
+      install -Dm755 setup/loop-hook    $out/qemu.d/migrant-loop
+      install -Dm755 setup/network-hook $out/network.d/migrant
       patchShebangs $out
       runHook postInstall
     '';
@@ -140,11 +158,8 @@ stdenvNoCC.mkDerivation {
   version = "0-unstable-2026-09-09";
   inherit src;
 
-  # The hook's shared bridge drop rule: one atomic nft transaction instead of
-  # a gate on `nft add chain`, which succeeds on an existing chain and so
-  # appended a copy on every VM start (1,705 on gs-ci-1 after two days).
-  # Upstream pigmonkey/migrant has the same gate at df2cda8.
-  patches = [ ./patches/qemu-hook-bridge-drop-rule-once.patch ];
+  # No patches here: every patched file is a hook, and the hooks are built
+  # (and patched) in `hooks` above.
 
   nativeBuildInputs = [ makeWrapper ];
   dontBuild = true;
