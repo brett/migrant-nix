@@ -92,20 +92,22 @@ check_hook "qemu hook:" qemu.d/migrant
 check_hook "loop hook:" qemu.d/migrant-loop
 check_hook "rp_filter hook:" network.d/migrant
 
-# hook freshness — WARNING only, and never restarts anything. Two ways a running
-# libvirtd can be on stale hooks:
+# hook freshness — WARNING only, and never restarts anything. NixOS links hooks
+# from libvirtd-config.service, which runs only when libvirtd starts, so a switch
+# that changes them leaves the links on the old store paths
+# (restartLibvirtdOnHookChange covers this unless it is turned off). The
+# module's manifest says what they should be.
 #
-# 1. The links point at the wrong store paths. NixOS links hooks from
-#    libvirtd-config.service, which runs only when libvirtd starts, so a switch
-#    that changes them leaves the old ones in place (restartLibvirtdOnHookChange
-#    covers this unless it is turned off). The module's manifest says what they
-#    should be.
-# 2. A link is newer than the daemon. libvirt decides which drivers have hooks
-#    once, at startup, so a hook that appeared after it started may never run.
-#    Upstream's cmd_setup restarts libvirtd on any hook change for this reason.
+# Deliberately NOT a timestamp check (link newer than the daemon). libvirt
+# caches only whether a driver has any hooks, at startup, and re-reads qemu.d/
+# on every dispatch — so re-linking identical targets after the daemon started
+# is healthy. On NixOS the module always registers qemu and network hooks, so
+# "driver had no hooks at startup" would need libvirtd to have started before
+# the module was first enabled; there is no unprivileged way to see that, and a
+# heuristic for it false-alarms on every manual libvirtd-config run.
 #
 # An idle libvirtd (socket-activated, exits after --timeout) re-links on its next
-# start, so neither applies while it is inactive.
+# start, so a mismatch does not matter while it is inactive.
 manifest=/etc/migrant-nix/hooks
 if systemctl is-active --quiet libvirtd.service 2>/dev/null; then
   stale=""
@@ -117,26 +119,12 @@ if systemctl is-active --quiet libvirtd.service 2>/dev/null; then
       fi
     done < "$manifest"
   fi
-  # systemd prints "@<epoch>" with --timestamp=unix; empty or "n/a" if unknown.
-  started=$(systemctl show -P ActiveEnterTimestamp --timestamp=unix libvirtd.service 2>/dev/null || true)
-  started=${started#@}
-  newer=""
-  if [[ "$started" =~ ^[0-9]+$ ]]; then
-    for rel in qemu.d/migrant qemu.d/migrant-loop network.d/migrant; do
-      # stat without -L: the link's own mtime, i.e. when it was (re)created.
-      mtime=$(stat -c '%Y' "$hooks_dir/$rel" 2>/dev/null || echo 0)
-      if (( mtime > started )); then
-        newer="${newer:+${newer}, }$rel"
-      fi
-    done
-  fi
-  if [[ -z "$stale" && -z "$newer" ]]; then
+  if [[ -z "$stale" ]]; then
     row "hooks loaded:" "ok"
   else
     row "hooks loaded:" "stale [WARNING]"
     sub "note:" "libvirtd must be restarted to pick up hook changes"
-    [[ -n "$stale" ]] && sub "not linked:" "$stale"
-    [[ -n "$newer" ]] && sub "newer than daemon:" "$newer"
+    sub "not linked:" "$stale"
     sub "hint:" "systemctl restart libvirtd (running VMs are left alone)"
     warn
   fi

@@ -635,15 +635,13 @@ in
             assert_vm_survived(pid)
             assert hooks_row(doctor()) == "ok"
 
-        with subtest("doctor: hooks re-linked after the daemon started"):
-            # Correct targets, but newer than libvirtd: libvirt registers which
-            # drivers have hooks only at startup.
+        with subtest("doctor: identical re-linking after daemon start is healthy"):
+            # libvirt re-reads qemu.d/ on every dispatch, so fresh links to the
+            # same targets are not stale however new they are.
             host.sleep(2)
             host.succeed("systemctl start libvirtd-config.service")
             before = invocation()
-            out = doctor()
-            assert hooks_row(out) == "stale [WARNING]", out
-            assert "newer than daemon:" in out, out
+            assert hooks_row(doctor()) == "ok"
             # The doctor only reports; it must not have restarted anything.
             assert invocation() == before, "the doctor restarted libvirtd"
             host.succeed("systemctl restart libvirtd.service")
