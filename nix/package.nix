@@ -106,7 +106,7 @@ assert lib.assertMsg (missingVars == [ ]) ''
 '';
 stdenvNoCC.mkDerivation {
   pname = "migrant";
-  version = "0-unstable-2026-08-30";
+  version = "0-unstable-2026-09-09";
   inherit src;
 
   # The hook's shared bridge drop rule: one atomic nft transaction instead of
