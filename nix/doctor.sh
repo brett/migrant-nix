@@ -92,6 +92,58 @@ check_hook "qemu hook:" qemu.d/migrant
 check_hook "loop hook:" qemu.d/migrant-loop
 check_hook "rp_filter hook:" network.d/migrant
 
+# hook freshness — WARNING only, and never restarts anything. Two ways a running
+# libvirtd can be on stale hooks:
+#
+# 1. The links point at the wrong store paths. NixOS links hooks from
+#    libvirtd-config.service, which runs only when libvirtd starts, so a switch
+#    that changes them leaves the old ones in place (restartLibvirtdOnHookChange
+#    covers this unless it is turned off). The module's manifest says what they
+#    should be.
+# 2. A link is newer than the daemon. libvirt decides which drivers have hooks
+#    once, at startup, so a hook that appeared after it started may never run.
+#    Upstream's cmd_setup restarts libvirtd on any hook change for this reason.
+#
+# An idle libvirtd (socket-activated, exits after --timeout) re-links on its next
+# start, so neither applies while it is inactive.
+manifest=/etc/migrant-nix/hooks
+if systemctl is-active --quiet libvirtd.service 2>/dev/null; then
+  stale=""
+  if [[ -r "$manifest" ]]; then
+    while read -r rel want; do
+      [[ -n "$rel" ]] || continue
+      if [[ "$(readlink "$hooks_dir/$rel" 2>/dev/null || true)" != "$want" ]]; then
+        stale="${stale:+${stale}, }$rel"
+      fi
+    done < "$manifest"
+  fi
+  # systemd prints "@<epoch>" with --timestamp=unix; empty or "n/a" if unknown.
+  started=$(systemctl show -P ActiveEnterTimestamp --timestamp=unix libvirtd.service 2>/dev/null || true)
+  started=${started#@}
+  newer=""
+  if [[ "$started" =~ ^[0-9]+$ ]]; then
+    for rel in qemu.d/migrant qemu.d/migrant-loop network.d/migrant; do
+      # stat without -L: the link's own mtime, i.e. when it was (re)created.
+      mtime=$(stat -c '%Y' "$hooks_dir/$rel" 2>/dev/null || echo 0)
+      if (( mtime > started )); then
+        newer="${newer:+${newer}, }$rel"
+      fi
+    done
+  fi
+  if [[ -z "$stale" && -z "$newer" ]]; then
+    row "hooks loaded:" "ok"
+  else
+    row "hooks loaded:" "stale [WARNING]"
+    sub "note:" "libvirtd must be restarted to pick up hook changes"
+    [[ -n "$stale" ]] && sub "not linked:" "$stale"
+    [[ -n "$newer" ]] && sub "newer than daemon:" "$newer"
+    sub "hint:" "systemctl restart libvirtd (running VMs are left alone)"
+    warn
+  fi
+else
+  row "hooks loaded:" "ok (libvirtd idle; links on next start)"
+fi
+
 # command closure — the wrapped migrant must resolve everything lifecycle needs.
 for cmd in virsh virt-install qemu-img mkfs.ext4 xorriso wg; do
   if command -v "$cmd" >/dev/null 2>&1; then

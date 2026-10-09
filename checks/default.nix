@@ -493,11 +493,13 @@ in
             cli-changed.configuration.virtualisation.migrant.package = lib.mkForce cliChanged;
             hooks-changed.configuration.virtualisation.migrant.package = lib.mkForce hooksChanged;
             # The base hooks with the restart turned off: switching here from
-            # hooks-changed leaves libvirtd on stale links.
+            # hooks-changed leaves libvirtd on stale links for the doctor to find.
             opt-out.configuration.virtualisation.migrant.restartLibvirtdOnHookChange = false;
           };
         };
       testScript = ''
+        import re
+
         HOOKS = ["qemu.d/migrant", "qemu.d/migrant-loop", "network.d/migrant"]
         VM = "rsvm"
         # The link is the PATH-pinning wrapper; the marker is in the hook it execs.
@@ -521,6 +523,16 @@ in
             top = "/run/booted-system" + (f"/specialisation/{spec}" if spec else "")
             host.succeed(f"{top}/bin/switch-to-configuration test >&2")
 
+        def doctor():
+            # Warnings exit 0; KVM is absent here, so there is always at least one.
+            host.succeed("su - tester -c migrant-doctor > /tmp/doctor.out")
+            return host.succeed("cat /tmp/doctor.out")
+
+        def hooks_row(out):
+            m = re.search(r"^hooks loaded: +(.*)$", out, re.M)
+            assert m, out
+            return m.group(1)
+
         def qemu_pid():
             return host.succeed(f"pgrep -f 'guest={VM},'").strip()
 
@@ -535,6 +547,7 @@ in
         # At boot libvirtd-config has just linked the hooks: nothing to do.
         host.succeed("journalctl -u migrant-hooks-reload.service | grep -q 'migrant hooks are current'")
         assert links() == manifest(), f"{links()} != {manifest()}"
+        assert hooks_row(doctor()) == "ok"
 
         # A running isolated TCG domain, which also keeps libvirtd from idling out.
         host.succeed(f"mkdir -p /etc/migrant/{VM} && : > /etc/migrant/{VM}/network-isolation")
@@ -569,13 +582,18 @@ in
             host.succeed(CHANGED)
             host.succeed("journalctl -u migrant-hooks-reload.service | grep -q 'restarting libvirtd'")
             assert_vm_survived(pid)
+            assert hooks_row(doctor()) == "ok"
 
-        with subtest("opted out: no restart"):
+        with subtest("opted out: no restart, and the doctor warns"):
             before = invocation()
             switch("opt-out")
             host.fail("systemctl cat migrant-hooks-reload.service")
             assert invocation() == before, "libvirtd restarted although opted out"
             assert links() != manifest()
+            out = doctor()
+            assert hooks_row(out) == "stale [WARNING]", out
+            assert "libvirtd must be restarted to pick up hook changes" in out, out
+            assert "not linked:" in out, out
 
         with subtest("the unit's first appearance restarts libvirtd onto the current hooks"):
             before = invocation()
@@ -583,6 +601,22 @@ in
             assert invocation() != before, "libvirtd was not restarted"
             assert links() == manifest(), f"{links()} != {manifest()}"
             host.fail(CHANGED)
+            assert_vm_survived(pid)
+            assert hooks_row(doctor()) == "ok"
+
+        with subtest("doctor: hooks re-linked after the daemon started"):
+            # Correct targets, but newer than libvirtd: libvirt registers which
+            # drivers have hooks only at startup.
+            host.sleep(2)
+            host.succeed("systemctl start libvirtd-config.service")
+            before = invocation()
+            out = doctor()
+            assert hooks_row(out) == "stale [WARNING]", out
+            assert "newer than daemon:" in out, out
+            # The doctor only reports; it must not have restarted anything.
+            assert invocation() == before, "the doctor restarted libvirtd"
+            host.succeed("systemctl restart libvirtd.service")
+            assert hooks_row(doctor()) == "ok"
             assert_vm_survived(pid)
 
         host.succeed(f"virsh destroy {VM}")

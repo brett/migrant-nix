@@ -55,7 +55,8 @@ let
     "network.d/migrant"
   ] wrapHook;
 
-  # What each hook link should resolve to. Read by migrant-hooks-reload.
+  # What each hook link should resolve to. Read by migrant-hooks-reload and,
+  # via /etc/migrant-nix/hooks, by the doctor.
   hookManifest = pkgs.writeText "migrant-hooks-manifest" (
     lib.concatStrings (lib.mapAttrsToList (rel: path: "${rel} ${path}\n") hookWrappers)
   );
@@ -95,7 +96,8 @@ in
 
         Running VMs are not affected: libvirtd's unit uses KillMode=process, so
         a restart stops only the daemon, and it reattaches to its domains on
-        start. Set to false to restart libvirtd yourself.
+        start. Set to false to restart libvirtd yourself; `migrant-doctor` then
+        warns while the hooks are stale.
       '';
     };
   };
@@ -171,9 +173,8 @@ in
     virtualisation.libvirtd.hooks.qemu."migrant-loop" = hookWrappers."qemu.d/migrant-loop";
     virtualisation.libvirtd.hooks.network."migrant" = hookWrappers."network.d/migrant";
 
-    # The expected hook paths, for checking a host by hand (and the tests).
-    # Not under /etc/migrant, which is the hooks' state directory, nor
-    # /etc/libvirt, which NixOS never reads.
+    # For the doctor's stale-hook check. Not under /etc/migrant, which is the
+    # hooks' state directory, nor /etc/libvirt, which NixOS never reads.
     environment.etc."migrant-nix/hooks".source = hookManifest;
 
     # libvirtd has restartIfChanged = false, and libvirtd-config.service — the

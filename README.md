@@ -63,11 +63,13 @@ so it runs a read-only doctor instead (also available directly as
 `migrant-doctor`).
 
 It checks libvirtd and virtlogd, group membership, `/etc/migrant`, the images
-directory, all three hooks, the runtime command closure, virtiofsd, the
-`migrant` network, libvirt's firewall backend, and bridge netfilter. A missing
+directory, all three hooks and whether the running libvirtd has picked up their
+current versions, the runtime command closure, virtiofsd, the `migrant`
+network, libvirt's firewall backend, and bridge netfilter. A missing
 module-provided prerequisite is fatal (exit 78); host-hardware and degraded
 conditions — no KVM, a network predating the IPv6 subnet, virtiofsd not wired —
-are warnings. It never calls `sudo` and never changes anything.
+are warnings, as are hooks libvirtd has not picked up yet. It never calls
+`sudo` and never changes anything.
 
 From there, every other migrant subcommand works as documented upstream:
 `migrant up`, `status`, `ssh`, `destroy`, and so on.
@@ -107,7 +109,8 @@ only the daemon, which reattaches to its domains when it starts. The first
 switch after enabling this restarts libvirtd once, because the unit is new and
 the hook paths move to the split-out derivation.
 
-Set it to `false` to restart libvirtd yourself at a time of your choosing.
+Set it to `false` to restart libvirtd yourself at a time of your choosing;
+`migrant-doctor` warns while the hooks are stale.
 
 ## Notes
 
@@ -154,7 +157,8 @@ runs a real `migrant destroy` against a TCG domain, and asserts the doctor
 passes as an unprivileged user with no `sudo` on the system.
 `module-nftables-host` re-checks the host setup with nftables enabled.
 `module-hook-restart` switches between specialisations with a running VM and
-asserts libvirtd restarts exactly when the hooks change and the VM survives it.
+asserts libvirtd restarts exactly when the hooks change, the VM survives it, and
+the doctor flags stale hooks.
 
 ### Bumping the pinned migrant
 
