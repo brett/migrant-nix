@@ -536,10 +536,26 @@ in
         def qemu_pid():
             return host.succeed(f"pgrep -f 'guest={VM},'").strip()
 
+        def fw_snapshot():
+            # Both families' filter tables, restricted to what isolation rests
+            # on: every rule of the built-in chains the hook jumps from (so
+            # the jumps AND their order relative to libvirt's own are covered)
+            # plus every rule inside the per-VM chains. Counters stripped. A
+            # bare `iptables -nL CHAIN` would pass for an emptied chain.
+            snap = ""
+            for cmd in ("iptables-save", "ip6tables-save"):
+                snap += f"## {cmd}\n" + host.succeed(
+                    f"{cmd} -t filter"
+                    " | grep -E '^-A (INPUT|FORWARD|OUTPUT|MIGRANT6?_[0-9a-f]{8}) '"
+                    " | sed -E 's/\\[[0-9]+:[0-9]+\\] //'"
+                )
+            return snap
+
         def assert_vm_survived(pid):
             assert qemu_pid() == pid, "the domain's qemu process did not survive"
             host.succeed(f"virsh domstate {VM} | grep -qx running")
-            host.succeed(f"iptables -nL {chain} >/dev/null")
+            now = fw_snapshot()
+            assert now == fw_base, f"isolation rules changed:\n--- before\n{fw_base}\n--- after\n{now}"
 
         host.wait_for_unit("libvirtd.service")
         host.wait_for_unit("migrant-network.service")
@@ -564,6 +580,21 @@ in
         chain = "MIGRANT_" + host.succeed(f"printf %s {VM} | md5sum | cut -c1-8").strip()
         host.wait_until_succeeds(f"iptables -nL {chain} >/dev/null", timeout=30)
         pid = qemu_pid()
+        tap = host.succeed(f"cat /run/migrant/{VM}.iface").strip()
+        fw_base = fw_snapshot()
+        # The baseline must actually hold the isolation, or equality is vacuous.
+        chain6 = chain.replace("MIGRANT_", "MIGRANT6_")
+        for needle in (
+            f"-A {chain} ",  # the v4 per-VM chain has rules
+            f"-j {chain}",  # ...and a jump into it
+            f"-A {chain6} ",  # the same for v6
+            f"-j {chain6}",
+        ):
+            assert needle in fw_base, f"baseline lacks {needle!r}:\n{fw_base}"
+        assert any(
+            l.startswith("-A FORWARD") and f"--physdev-in {tap}" in l and "10.0.0.0/8" in l
+            for l in fw_base.splitlines()
+        ), f"baseline lacks the FORWARD RFC 1918 reject:\n{fw_base}"
 
         with subtest("a CLI-only change leaves libvirtd alone"):
             before, before_links = invocation(), links()
@@ -618,6 +649,10 @@ in
             host.succeed("systemctl restart libvirtd.service")
             assert hooks_row(doctor()) == "ok"
             assert_vm_survived(pid)
+
+        with subtest("self-check: the firewall comparison catches a lost rule"):
+            host.succeed(f"iptables -D {chain} 1")
+            assert fw_snapshot() != fw_base, "deleting an isolation rule went unnoticed"
 
         host.succeed(f"virsh destroy {VM}")
         host.wait_until_fails(f"iptables -nL {chain} >/dev/null", timeout=30)
